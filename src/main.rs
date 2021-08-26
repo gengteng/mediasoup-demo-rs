@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use structopt::StructOpt;
 use tokio::signal::ctrl_c;
 
+/// A demo of Mediasoup in Rust
 #[derive(Debug, StructOpt)]
 #[structopt(name = "mediasoup-demo", about = "A demo of Mediasoup.")]
 struct Opts {
