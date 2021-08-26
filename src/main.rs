@@ -25,9 +25,11 @@ struct Opts {
     #[structopt(short = "l", long)]
     log_level: LevelFilter,
 
+    /// log root path
     #[structopt(short = "r", long, default_value = "./log")]
     log_root: PathBuf,
 
+    /// http port
     #[structopt(short = "p", long, default_value = "8080")]
     port: u16,
 }
