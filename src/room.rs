@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::participant::ParticipantId;
 use event_listener_primitives::{Bag, BagOnce, HandlerId};
 use mediasoup::prelude::*;

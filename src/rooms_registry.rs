@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::room::{Room, RoomId, WeakRoom};
 use mediasoup::prelude::*;
 use std::collections::hash_map::Entry;
@@ -100,4 +102,10 @@ impl RoomsRegistry {
         .detach();
         Ok(room)
     }
+}
+
+#[derive(Clone, Default, Debug)]
+pub struct ServerState {
+    pub worker_manger: WorkerManager,
+    pub rooms_registry: RoomsRegistry,
 }
