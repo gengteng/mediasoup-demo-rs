@@ -1,3 +1,8 @@
+mod codec;
+mod participant;
+mod room;
+mod rooms_registry;
+
 use mediasoup::worker::{Worker, WorkerSettings};
 use mediasoup::worker_manager::WorkerManager;
 
