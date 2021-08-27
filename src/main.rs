@@ -3,16 +3,20 @@ mod participant;
 mod room;
 mod rooms_registry;
 
+use crate::participant::messages::ClientMessage;
+use crate::participant::ParticipantConnection;
 use crate::room::RoomId;
 use crate::rooms_registry::ServerState;
 use axum::extract::{
     ws::{Message, WebSocket},
     Extension, Query, WebSocketUpgrade,
 };
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::AddExtensionLayer;
 use log::LevelFilter;
 use serde::Deserialize;
+use std::env::current_dir;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use structopt::StructOpt;
@@ -23,7 +27,7 @@ use tokio::signal::ctrl_c;
 #[structopt(name = "mediasoup-demo", about = "A demo of Mediasoup.")]
 struct Opts {
     /// log level
-    #[structopt(short = "l", long)]
+    #[structopt(short = "l", long, default_value = "INFO")]
     log_level: LevelFilter,
 
     /// log root path
@@ -43,31 +47,51 @@ async fn main() -> anyhow::Result<()> {
         port,
     } = Opts::from_args();
 
+    println!("Log level is {}.", log_level);
+    println!(
+        "Log root directory is {}.",
+        current_dir()?.join(&log_root).canonicalize()?.display()
+    );
+    println!("Http port is {}.", port);
+
     let _handle = init_logger(log_level, log_root)?;
 
     let app = axum::Router::new()
         .layer(AddExtensionLayer::new(ServerState::default()))
         .route("/ws", axum::handler::get(ws_handler));
 
-    tokio::spawn(async move {
-        let sock_addr = SocketAddr::from(([0, 0, 0, 0], port));
-        if let Err(e) = axum::Server::bind(&sock_addr)
+    let sock_addr = SocketAddr::from(([0, 0, 0, 0], port));
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+
+    let server_handle = tokio::spawn(async move {
+        log::info!("Http server started.");
+        let graceful_server = axum::Server::bind(&sock_addr)
             .serve(app.into_make_service())
-            .await
-        {
-            log::error!("Axum error: {}", e);
+            .with_graceful_shutdown(async {
+                rx.await.ok();
+            });
+
+        // Await the `server` receiving the signal...
+        if let Err(e) = graceful_server.await {
+            log::error!("Http server error: {}", e);
         }
     });
 
     if ctrl_c().await.is_err() {
-        anyhow::bail!("Signal listen error");
+        anyhow::bail!("Signal listen error.");
     }
     println!("\nGot Ctrl-C, press again to exit.");
 
     if ctrl_c().await.is_err() {
-        anyhow::bail!("Signal listen error");
+        anyhow::bail!("Signal listen error.");
     }
-    println!("\nBye!");
+
+    tx.send(()).unwrap_or_default();
+    server_handle.await?;
+    println!("\nAxum server shutdown gracefully.");
+
+    println!("Bye!");
+
     Ok(())
 }
 
@@ -78,67 +102,106 @@ struct WebsocketUpgradeQuery {
 }
 
 async fn ws_handler(
-    Query(WebsocketUpgradeQuery { room_id: _ }): Query<WebsocketUpgradeQuery>,
+    Query(WebsocketUpgradeQuery { room_id }): Query<WebsocketUpgradeQuery>,
     ws: WebSocketUpgrade,
-    Extension(_server_state): Extension<ServerState>,
+    Extension(server_state): Extension<ServerState>,
 ) -> impl IntoResponse {
-    // TODO: init websocket
+    let get_room = match room_id {
+        None => server_state
+            .rooms_registry
+            .create_room(&server_state.worker_manger)
+            .await
+            .map_err(anyhow::Error::msg),
+        Some(room_id) => server_state
+            .rooms_registry
+            .get_or_create_room(&server_state.worker_manger, room_id)
+            .await
+            .map_err(anyhow::Error::msg),
+    };
 
-    // use axum::body::Full;
-    // use axum::http::Response;
-    //
-    // let get_room = match room_id {
-    //     None => server_state
-    //         .rooms_registry
-    //         .create_room(&server_state.worker_manger)
-    //         .await
-    //         .map_err(anyhow::Error::msg),
-    //     Some(room_id) => server_state
-    //         .rooms_registry
-    //         .get_or_create_room(&server_state.worker_manger, room_id)
-    //         .await
-    //         .map_err(anyhow::Error::msg),
-    // };
-    //
-    // let room = match get_room {
-    //     Ok(room) => room,
-    //     Err(error) => {
-    //         log::error!("get room error: {}", error);
-    //
-    //         return Response::builder()
-    //             .status(StatusCode::INTERNAL_SERVER_ERROR)
-    //             .body(Full::new(Bytes::new()))
-    //             .unwrap();
-    //     }
-    // };
+    let room = match get_room {
+        Ok(room) => room,
+        Err(error) => {
+            log::error!("get room error: {}", error);
 
-    ws.on_upgrade(move |socket| async move {
-        if let Err(e) = handle_socket(socket).await {
-            log::error!("Websocket error: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Cannot get or create a room",
+            );
         }
-    })
+    };
+
+    let participant_connection = match ParticipantConnection::new(room).await {
+        Ok(participant_connection) => participant_connection,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to create transport",
+            )
+        }
+    };
+
+    (
+        ws.on_upgrade(move |socket| async move {
+            if let Err(e) = handle_socket(socket, participant_connection).await {
+                log::error!("Websocket error: {}", e);
+            }
+        })
+        .into_response()
+        .status(),
+        "Failed to upgrade",
+    )
 }
 
-async fn handle_socket(mut socket: WebSocket) -> anyhow::Result<()> {
-    if let Some(msg) = socket.recv().await {
-        if let Ok(msg) = msg {
-            println!("Client says: {:?}", msg);
-        } else {
-            println!("client disconnected");
-            return Ok(());
-        }
-    }
+async fn handle_socket(mut socket: WebSocket, mut pc: ParticipantConnection) -> anyhow::Result<()> {
+    let server_init_message = pc.build_init_message();
+
+    socket
+        .send(Message::Text(serde_json::to_string(&server_init_message)?))
+        .await?;
+
+    let mut server_message_receiver = pc.init_listen();
 
     loop {
-        if socket
-            .send(Message::Text(String::from("Hi!")))
-            .await
-            .is_err()
-        {
-            println!("client disconnected");
-            return Ok(());
+        tokio::select! {
+            server_message_recv = server_message_receiver.recv() => {
+                if let Some(_message) = server_message_recv {
+                }
+            }
+            websocket_recv = socket.recv() => {
+                if let Some(result) = websocket_recv {
+                    let message = result?;
+                    match message {
+                        Message::Text(text) => {
+                            let client_message: participant::messages::ClientMessage =
+                                serde_json::from_str(&text)?;
+
+                            match client_message {
+                                ClientMessage::Init { .. } => {}
+                                ClientMessage::ConnectProducerTransport { .. } => {}
+                                ClientMessage::Produce { .. } => {}
+                                ClientMessage::ConnectConsumerTransport { .. } => {}
+                                ClientMessage::Consume { .. } => {}
+                                ClientMessage::ConsumerResume { .. } => {}
+                            }
+                        }
+                        Message::Binary(_bytes) => {}
+                        Message::Ping(_ping) => {}
+                        Message::Pong(_pong) => {}
+                        Message::Close(close) => {
+                            if let Some(close_frame) = close {
+                                log::debug!(
+                                    "Received close frame: ({}, {})",
+                                    close_frame.code,
+                                    close_frame.reason
+                                );
+                            }
+                            return Ok(());
+                        }
+                    }
+                }
+            }
         }
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     }
 }
 

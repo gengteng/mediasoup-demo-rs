@@ -1,14 +1,16 @@
 #![allow(dead_code)]
 
+use crate::participant::messages::{ServerMessage, TransportOptions};
 use crate::room::Room;
 use event_listener_primitives::HandlerId;
 use mediasoup::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
+use tokio::sync::mpsc::UnboundedReceiver;
 use uuid::Uuid;
 
-mod messages {
+pub mod messages {
     use crate::participant::ParticipantId;
     use crate::room::RoomId;
     use mediasoup::prelude::*;
@@ -195,6 +197,77 @@ impl ParticipantConnection {
             room,
             attached_handlers: Vec::new(),
         })
+    }
+
+    pub fn build_init_message(&self) -> ServerMessage {
+        ServerMessage::Init {
+            room_id: self.room.id(),
+            consumer_transport_options: TransportOptions {
+                id: self.transports.consumer.id(),
+                dtls_parameters: self.transports.consumer.dtls_parameters(),
+                ice_candidates: self.transports.consumer.ice_candidates().clone(),
+                ice_parameters: self.transports.consumer.ice_parameters().clone(),
+            },
+            producer_transport_options: TransportOptions {
+                id: self.transports.producer.id(),
+                dtls_parameters: self.transports.producer.dtls_parameters(),
+                ice_candidates: self.transports.producer.ice_candidates().clone(),
+                ice_parameters: self.transports.producer.ice_parameters().clone(),
+            },
+            router_rtp_capabilities: self.room.router().rtp_capabilities().clone(),
+        }
+    }
+
+    pub fn init_listen(&mut self) -> UnboundedReceiver<ServerMessage> {
+        use tokio::sync::mpsc::unbounded_channel;
+        let (tx, rx) = unbounded_channel::<ServerMessage>();
+
+        // Listen for new producers added to the room
+        self.attached_handlers.push(self.room.on_producer_add({
+            let own_participant_id = self.id;
+            let tx = tx.clone();
+            move |participant_id, producer| {
+                if &own_participant_id == participant_id {
+                    return;
+                }
+                if let Err(e) = tx.send(ServerMessage::ProducerAdded {
+                    participant_id: *participant_id,
+                    producer_id: producer.id(),
+                }) {
+                    log::error!("Failed to send server message (new producer): {}", e);
+                }
+            }
+        }));
+        // Listen for producers removed from the the room
+        self.attached_handlers.push(self.room.on_producer_remove({
+            let own_participant_id = self.id;
+            let tx = tx.clone();
+            move |participant_id, producer_id| {
+                if &own_participant_id == participant_id {
+                    return;
+                }
+                if let Err(e) = tx.send(ServerMessage::ProducerRemoved {
+                    participant_id: *participant_id,
+                    producer_id: *producer_id,
+                }) {
+                    log::error!("Failed to send server message (producer removed): {}", e);
+                }
+            }
+        }));
+        // Notify client about any producers that already exist in the room
+        for (participant_id, producer_id) in self.room.get_all_producers() {
+            if let Err(e) = tx.send(ServerMessage::ProducerAdded {
+                participant_id,
+                producer_id,
+            }) {
+                log::warn!(
+                    "Failed to send server message (to notify client producers): {}",
+                    e
+                );
+            }
+        }
+
+        rx
     }
 }
 //
