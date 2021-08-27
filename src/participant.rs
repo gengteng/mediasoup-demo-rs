@@ -283,7 +283,13 @@ impl ParticipantConnection {
                             InternalMessage::Stop => {
                                 break;
                             }
-                            _ => {}
+                            InternalMessage::SaveProducer(producer) => {
+                                // Retain producer to prevent it from being destroyed
+                                self.producers.push(producer);
+                            }
+                            InternalMessage::SaveConsumer(consumer) => {
+                                self.consumers.insert(consumer.id(), consumer);
+                            }
                         }
                     }
                 }
