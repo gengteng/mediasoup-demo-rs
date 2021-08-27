@@ -3,14 +3,10 @@ mod participant;
 mod room;
 mod rooms_registry;
 
-use crate::participant::messages::ClientMessage;
 use crate::participant::ParticipantConnection;
 use crate::room::RoomId;
 use crate::rooms_registry::ServerState;
-use axum::extract::{
-    ws::{Message, WebSocket},
-    Extension, Query, WebSocketUpgrade,
-};
+use axum::extract::{Extension, Query, WebSocketUpgrade};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::AddExtensionLayer;
@@ -48,11 +44,12 @@ async fn main() -> anyhow::Result<()> {
     } = Opts::from_args();
 
     println!("Log level is {}.", log_level);
+    let abs_log_root = current_dir()?.join(&log_root);
+    tokio::fs::create_dir_all(&abs_log_root).await?;
     println!(
         "Log root directory is {}.",
-        current_dir()?.join(&log_root).canonicalize()?.display()
+        abs_log_root.canonicalize()?.display()
     );
-    println!("Http port is {}.", port);
 
     let _handle = init_logger(log_level, log_root)?;
 
@@ -64,7 +61,7 @@ async fn main() -> anyhow::Result<()> {
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
 
     let server_handle = tokio::spawn(async move {
-        log::info!("Http server started.");
+        log::info!("Http server started ({}).", sock_addr);
         let graceful_server = axum::Server::bind(&sock_addr)
             .serve(app.into_make_service())
             .with_graceful_shutdown(async {
@@ -88,7 +85,7 @@ async fn main() -> anyhow::Result<()> {
 
     tx.send(()).unwrap_or_default();
     server_handle.await?;
-    println!("\nAxum server shutdown gracefully.");
+    println!("\nHttp server shutdown gracefully.");
 
     println!("Bye!");
 
@@ -143,7 +140,7 @@ async fn ws_handler(
 
     (
         ws.on_upgrade(move |socket| async move {
-            if let Err(e) = handle_socket(socket, participant_connection).await {
+            if let Err(e) = participant_connection.run(socket).await {
                 log::error!("Websocket error: {}", e);
             }
         })
@@ -151,58 +148,6 @@ async fn ws_handler(
         .status(),
         "Failed to upgrade",
     )
-}
-
-async fn handle_socket(mut socket: WebSocket, mut pc: ParticipantConnection) -> anyhow::Result<()> {
-    let server_init_message = pc.build_init_message();
-
-    socket
-        .send(Message::Text(serde_json::to_string(&server_init_message)?))
-        .await?;
-
-    let mut server_message_receiver = pc.init_listen();
-
-    loop {
-        tokio::select! {
-            server_message_recv = server_message_receiver.recv() => {
-                if let Some(_message) = server_message_recv {
-                }
-            }
-            websocket_recv = socket.recv() => {
-                if let Some(result) = websocket_recv {
-                    let message = result?;
-                    match message {
-                        Message::Text(text) => {
-                            let client_message: participant::messages::ClientMessage =
-                                serde_json::from_str(&text)?;
-
-                            match client_message {
-                                ClientMessage::Init { .. } => {}
-                                ClientMessage::ConnectProducerTransport { .. } => {}
-                                ClientMessage::Produce { .. } => {}
-                                ClientMessage::ConnectConsumerTransport { .. } => {}
-                                ClientMessage::Consume { .. } => {}
-                                ClientMessage::ConsumerResume { .. } => {}
-                            }
-                        }
-                        Message::Binary(_bytes) => {}
-                        Message::Ping(_ping) => {}
-                        Message::Pong(_pong) => {}
-                        Message::Close(close) => {
-                            if let Some(close_frame) = close {
-                                log::debug!(
-                                    "Received close frame: ({}, {})",
-                                    close_frame.code,
-                                    close_frame.reason
-                                );
-                            }
-                            return Ok(());
-                        }
-                    }
-                }
-            }
-        }
-    }
 }
 
 fn init_logger<P: AsRef<Path>>(level: LevelFilter, path: P) -> anyhow::Result<log4rs::Handle> {

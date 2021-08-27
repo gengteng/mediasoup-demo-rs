@@ -81,7 +81,7 @@ impl Room {
             .await
             .map_err(|error| format!("Failed to create router: {}", error))?;
 
-        println!("Room {} created", id);
+        log::info!("Room {} created", id);
 
         Ok(Self {
             inner: Arc::new(Inner {
