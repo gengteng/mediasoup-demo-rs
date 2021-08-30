@@ -2,12 +2,12 @@ mod codec;
 mod participant;
 mod room;
 mod rooms_registry;
+mod runtime;
 
 use crate::participant::ParticipantConnection;
 use crate::room::RoomId;
 use crate::rooms_registry::ServerState;
 use axum::extract::{Extension, Query, WebSocketUpgrade};
-use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::AddExtensionLayer;
 use log::LevelFilter;
@@ -31,7 +31,7 @@ struct Opts {
     log_root: PathBuf,
 
     /// http port
-    #[structopt(short = "p", long, default_value = "8080")]
+    #[structopt(short = "p", long, default_value = "3000")]
     port: u16,
 }
 
@@ -54,8 +54,8 @@ async fn main() -> anyhow::Result<()> {
     let _handle = init_logger(log_level, log_root)?;
 
     let app = axum::Router::new()
-        .layer(AddExtensionLayer::new(ServerState::default()))
-        .route("/ws", axum::handler::get(ws_handler));
+        .route("/ws", axum::handler::get(ws_handler))
+        .layer(AddExtensionLayer::new(ServerState::default()));
 
     let sock_addr = SocketAddr::from(([0, 0, 0, 0], port));
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
@@ -103,51 +103,51 @@ async fn ws_handler(
     ws: WebSocketUpgrade,
     Extension(server_state): Extension<ServerState>,
 ) -> impl IntoResponse {
-    let get_room = match room_id {
-        None => server_state
-            .rooms_registry
-            .create_room(&server_state.worker_manger)
-            .await
-            .map_err(anyhow::Error::msg),
-        Some(room_id) => server_state
-            .rooms_registry
-            .get_or_create_room(&server_state.worker_manger, room_id)
-            .await
-            .map_err(anyhow::Error::msg),
-    };
+    ws.on_upgrade(move |socket| async move {
+        std::thread::spawn(move || {
+            runtime::Runtime::new()
+                .expect("Failed to create Runtime")
+                .block_on(async move {
+                    {
+                        let get_room = match room_id {
+                            None => server_state
+                                .rooms_registry
+                                .create_room(&server_state.worker_manger)
+                                .await
+                                .map_err(anyhow::Error::msg),
+                            Some(room_id) => server_state
+                                .rooms_registry
+                                .get_or_create_room(&server_state.worker_manger, room_id)
+                                .await
+                                .map_err(anyhow::Error::msg),
+                        };
 
-    let room = match get_room {
-        Ok(room) => room,
-        Err(error) => {
-            log::error!("get room error: {}", error);
+                        let room = match get_room {
+                            Ok(room) => {
+                                log::debug!("Room {} created.", room.id());
+                                room
+                            }
+                            Err(error) => {
+                                log::error!("get room error: {}", error);
+                                return;
+                            }
+                        };
 
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Cannot get or create a room",
-            );
-        }
-    };
+                        let participant_connection = match ParticipantConnection::new(room).await {
+                            Ok(participant_connection) => participant_connection,
+                            Err(e) => {
+                                log::error!("Failed to create transport: {}", e);
+                                return;
+                            }
+                        };
 
-    let participant_connection = match ParticipantConnection::new(room).await {
-        Ok(participant_connection) => participant_connection,
-        Err(_) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to create transport",
-            )
-        }
-    };
-
-    (
-        ws.on_upgrade(move |socket| async move {
-            if let Err(e) = participant_connection.run(socket).await {
-                log::error!("Websocket error: {}", e);
-            }
-        })
-        .into_response()
-        .status(),
-        "Failed to upgrade",
-    )
+                        if let Err(e) = participant_connection.run(socket).await {
+                            log::error!("participant error: {}", e);
+                        }
+                    }
+                });
+        });
+    })
 }
 
 fn init_logger<P: AsRef<Path>>(level: LevelFilter, path: P) -> anyhow::Result<log4rs::Handle> {

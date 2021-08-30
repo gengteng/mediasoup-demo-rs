@@ -294,8 +294,11 @@ impl ParticipantConnection {
                     }
                 }
                 server_message_recv = server_message_receiver.recv() => {
-                    if let Some(_message) = server_message_recv {
-
+                    if let Some(message) = server_message_recv {
+                        if let Err(e) = socket.send(Message::Text(serde_json::to_string(&message)?)).await {
+                            log::error!("send server message error: {}", e);
+                            internal_message_sender.send(InternalMessage::Stop).unwrap_or_default();
+                        }
                     }
                 }
                 websocket_recv = socket.recv() => {
@@ -325,7 +328,7 @@ impl ParticipantConnection {
                                                 .await
                                             {
                                                 Ok(_) => {
-                                                    if let Err(e) = server_sender.send(ServerMessage::ConnectedConsumerTransport) {
+                                                    if let Err(e) = server_sender.send(ServerMessage::ConnectedProducerTransport) {
                                                         log::error!("send message error: {}", e);
                                                         internal_sender.send(InternalMessage::Stop).unwrap_or_default();
                                                     }
@@ -342,6 +345,7 @@ impl ParticipantConnection {
                                         });
                                     }
                                     ClientMessage::Produce { kind, rtp_parameters, } => {
+                                        log::debug!("Received client message 'Produce'.");
                                         let participant_id = self.id;
 
                                         let transport = self.transports.producer.clone();
@@ -350,7 +354,9 @@ impl ParticipantConnection {
                                         // parameters
                                         let server_sender = server_message_sender.clone();
                                         let internal_sender = internal_message_sender.clone();
+
                                         tokio::task::spawn_local(async move {
+                                            log::debug!("Trying to produce");
                                             match transport
                                                 .produce(ProducerOptions::new(kind, rtp_parameters))
                                                 .await
