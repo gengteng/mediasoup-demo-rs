@@ -11,6 +11,7 @@ use axum::extract::{Extension, Query, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use axum::AddExtensionLayer;
 use log::LevelFilter;
+use log4rs::encode::pattern::PatternEncoder;
 use serde::Deserialize;
 use std::env::current_dir;
 use std::net::SocketAddr;
@@ -154,19 +155,25 @@ fn init_logger<P: AsRef<Path>>(level: LevelFilter, path: P) -> anyhow::Result<lo
     use log4rs::config::Root;
     use log4rs::Config;
 
+    let pattern = Box::new(PatternEncoder::new(
+        "{d(%Y-%m-%d %H:%M:%S)(local)} {l} {t} - {m}{n}",
+    ));
+
     let archived_pattern = path
         .as_ref()
         .join("archived/msd-{}.log")
         .display()
         .to_string();
-    let rolling_file_appender = RollingFileAppender::builder().build(
-        path.as_ref().join("msd.log"),
-        Box::new(CompoundPolicy::new(
-            Box::new(SizeTrigger::new(1024 * 1024)),
-            Box::new(FixedWindowRoller::builder().build(&archived_pattern, 20)?),
-        )),
-    )?;
-    let console_appender = ConsoleAppender::builder().build();
+    let rolling_file_appender = RollingFileAppender::builder()
+        .encoder(pattern.clone())
+        .build(
+            path.as_ref().join("msd.log"),
+            Box::new(CompoundPolicy::new(
+                Box::new(SizeTrigger::new(1024 * 1024)),
+                Box::new(FixedWindowRoller::builder().build(&archived_pattern, 20)?),
+            )),
+        )?;
+    let console_appender = ConsoleAppender::builder().encoder(pattern).build();
 
     let config = Config::builder()
         .appender(Appender::builder().build("rolling", Box::new(rolling_file_appender)))
