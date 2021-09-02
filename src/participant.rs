@@ -355,37 +355,39 @@ impl ParticipantConnection {
                                         let server_sender = server_message_sender.clone();
                                         let internal_sender = internal_message_sender.clone();
 
-                                        tokio::task::spawn_local(async move {
-                                            log::debug!("Trying to produce");
-                                            match transport
-                                                .produce(ProducerOptions::new(kind, rtp_parameters))
-                                                .await
-                                            {
-                                                Ok(producer) => {
-                                                    let id = producer.id();
-                                                    if let Err(e) = server_sender.send(ServerMessage::Produced { id }) {
-                                                        log::error!("send message error: {}", e);
-                                                        internal_sender.send(InternalMessage::Stop).unwrap_or_default();
-                                                        return;
+                                        std::thread::spawn(move || {
+                                            futures::executor::block_on(async move {
+                                                log::debug!("Trying to produce");
+                                                match transport
+                                                    .produce(ProducerOptions::new(kind, rtp_parameters))
+                                                    .await
+                                                {
+                                                    Ok(producer) => {
+                                                        let id = producer.id();
+                                                        if let Err(e) = server_sender.send(ServerMessage::Produced { id }) {
+                                                            log::error!("send message error: {}", e);
+                                                            internal_sender.send(InternalMessage::Stop).unwrap_or_default();
+                                                            return;
+                                                        }
+                                                        // Add producer to the room so that others can consume it
+                                                        room.add_producer(participant_id, producer.clone());
+                                                        // Producer is stored in a hashmap since if we don't do it, it will
+                                                        // get destroyed as soon as its instance goes out out scope
+                                                        internal_sender.send(InternalMessage::SaveProducer(producer)).unwrap_or_default();
+                                                        log::info!(
+                                                            "[participant_id {}] {:?} producer created: {}",
+                                                            participant_id, kind, id,
+                                                        );
                                                     }
-                                                    // Add producer to the room so that others can consume it
-                                                    room.add_producer(participant_id, producer.clone());
-                                                    // Producer is stored in a hashmap since if we don't do it, it will
-                                                    // get destroyed as soon as its instance goes out out scope
-                                                    internal_sender.send(InternalMessage::SaveProducer(producer)).unwrap_or_default();
-                                                    log::info!(
-                                                        "[participant_id {}] {:?} producer created: {}",
-                                                        participant_id, kind, id,
-                                                    );
+                                                    Err(error) => {
+                                                        log::error!(
+                                                            "[participant_id {}] Failed to create {:?} producer: {}",
+                                                            participant_id, kind, error
+                                                        );
+                                                        internal_sender.send(InternalMessage::Stop).unwrap_or_default();
+                                                    }
                                                 }
-                                                Err(error) => {
-                                                    log::error!(
-                                                        "[participant_id {}] Failed to create {:?} producer: {}",
-                                                        participant_id, kind, error
-                                                    );
-                                                    internal_sender.send(InternalMessage::Stop).unwrap_or_default();
-                                                }
-                                            }
+                                            });
                                         });
                                     }
                                     ClientMessage::ConnectConsumerTransport { dtls_parameters} => {
@@ -439,41 +441,43 @@ impl ParticipantConnection {
                                         // capabilities were sent by the client prior to that
                                         let server_sender = server_message_sender.clone();
                                         let internal_sender = internal_message_sender.clone();
-                                        tokio::task::spawn_local(async move {
-                                            let mut options = ConsumerOptions::new(producer_id, rtp_capabilities);
-                                            options.paused = true;
+                                        std::thread::spawn(move || {
+                                            futures::executor::block_on(async move {
+                                                let mut options = ConsumerOptions::new(producer_id, rtp_capabilities);
+                                                options.paused = true;
 
-                                            match transport.consume(options).await {
-                                                Ok(consumer) => {
-                                                    let id = consumer.id();
-                                                    let kind = consumer.kind();
-                                                    let rtp_parameters = consumer.rtp_parameters().clone();
-                                                    if let Err(e) = server_sender.send(ServerMessage::Consumed {
-                                                        id,
-                                                        producer_id,
-                                                        kind,
-                                                        rtp_parameters,
-                                                    }) {
-                                                        log::error!("send message error: {}", e);
-                                                        internal_sender.send(InternalMessage::Stop).unwrap_or_default();
-                                                        return;
+                                                match transport.consume(options).await {
+                                                    Ok(consumer) => {
+                                                        let id = consumer.id();
+                                                        let kind = consumer.kind();
+                                                        let rtp_parameters = consumer.rtp_parameters().clone();
+                                                        if let Err(e) = server_sender.send(ServerMessage::Consumed {
+                                                            id,
+                                                            producer_id,
+                                                            kind,
+                                                            rtp_parameters,
+                                                        }) {
+                                                            log::error!("send message error: {}", e);
+                                                            internal_sender.send(InternalMessage::Stop).unwrap_or_default();
+                                                            return;
+                                                        }
+                                                        // Consumer is stored in a hashmap since if we don't do it, it will
+                                                        // get destroyed as soon as its instance goes out out scope
+                                                        internal_sender.send(InternalMessage::SaveConsumer(consumer)).unwrap_or_default();
+                                                        log::info!(
+                                                            "[participant_id {}] {:?} consumer created: {}",
+                                                            participant_id, kind, id,
+                                                        );
                                                     }
-                                                    // Consumer is stored in a hashmap since if we don't do it, it will
-                                                    // get destroyed as soon as its instance goes out out scope
-                                                    internal_sender.send(InternalMessage::SaveConsumer(consumer)).unwrap_or_default();
-                                                    log::info!(
-                                                        "[participant_id {}] {:?} consumer created: {}",
-                                                        participant_id, kind, id,
-                                                    );
+                                                    Err(error) => {
+                                                        log::error!(
+                                                            "[participant_id {}] Failed to create consumer: {}",
+                                                            participant_id, error,
+                                                        );
+                                                        internal_sender.send(InternalMessage::Stop).unwrap_or_default();
+                                                    }
                                                 }
-                                                Err(error) => {
-                                                    log::error!(
-                                                        "[participant_id {}] Failed to create consumer: {}",
-                                                        participant_id, error,
-                                                    );
-                                                    internal_sender.send(InternalMessage::Stop).unwrap_or_default();
-                                                }
-                                            }
+                                            })
                                         });
                                     }
                                     ClientMessage::ConsumerResume { id } => {

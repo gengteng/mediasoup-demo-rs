@@ -104,49 +104,43 @@ async fn ws_handler(
     Extension(server_state): Extension<ServerState>,
 ) -> impl IntoResponse {
     ws.on_upgrade(move |socket| async move {
-        std::thread::spawn(move || {
-            runtime::Runtime::new()
-                .expect("Failed to create Runtime")
-                .block_on(async move {
-                    {
-                        let get_room = match room_id {
-                            None => server_state
-                                .rooms_registry
-                                .create_room(&server_state.worker_manger)
-                                .await
-                                .map_err(anyhow::Error::msg),
-                            Some(room_id) => server_state
-                                .rooms_registry
-                                .get_or_create_room(&server_state.worker_manger, room_id)
-                                .await
-                                .map_err(anyhow::Error::msg),
-                        };
+        {
+            let get_room = match room_id {
+                None => server_state
+                    .rooms_registry
+                    .create_room(&server_state.worker_manger)
+                    .await
+                    .map_err(anyhow::Error::msg),
+                Some(room_id) => server_state
+                    .rooms_registry
+                    .get_or_create_room(&server_state.worker_manger, room_id)
+                    .await
+                    .map_err(anyhow::Error::msg),
+            };
 
-                        let room = match get_room {
-                            Ok(room) => {
-                                log::debug!("Room {} created.", room.id());
-                                room
-                            }
-                            Err(error) => {
-                                log::error!("get room error: {}", error);
-                                return;
-                            }
-                        };
+            let room = match get_room {
+                Ok(room) => {
+                    log::debug!("Room {} created.", room.id());
+                    room
+                }
+                Err(error) => {
+                    log::error!("get room error: {}", error);
+                    return;
+                }
+            };
 
-                        let participant_connection = match ParticipantConnection::new(room).await {
-                            Ok(participant_connection) => participant_connection,
-                            Err(e) => {
-                                log::error!("Failed to create transport: {}", e);
-                                return;
-                            }
-                        };
+            let participant_connection = match ParticipantConnection::new(room).await {
+                Ok(participant_connection) => participant_connection,
+                Err(e) => {
+                    log::error!("Failed to create transport: {}", e);
+                    return;
+                }
+            };
 
-                        if let Err(e) = participant_connection.run(socket).await {
-                            log::error!("participant error: {}", e);
-                        }
-                    }
-                });
-        });
+            if let Err(e) = participant_connection.run(socket).await {
+                log::error!("participant error: {}", e);
+            }
+        }
     })
 }
 
