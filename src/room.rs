@@ -66,16 +66,12 @@ pub struct Room {
 
 impl Room {
     /// Create new `Room` with random `RoomId`
-    pub async fn new(worker_manager: &WorkerManager) -> Result<Self, String> {
-        Self::new_with_id(worker_manager, RoomId::new()).await
+    pub async fn new(worker: &Worker) -> Result<Self, String> {
+        Self::new_with_id(worker, RoomId::new()).await
     }
 
     /// Create new `Room` with a specific `RoomId`
-    pub async fn new_with_id(worker_manager: &WorkerManager, id: RoomId) -> Result<Room, String> {
-        let worker = worker_manager
-            .create_worker(WorkerSettings::default())
-            .await
-            .map_err(|error| format!("Failed to create worker: {}", error))?;
+    pub async fn new_with_id(worker: &Worker, id: RoomId) -> Result<Room, String> {
         let router = worker
             .create_router(RouterOptions::new(crate::codec::supported_media_codecs()))
             .await

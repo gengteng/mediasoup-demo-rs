@@ -3,20 +3,26 @@ mod participant;
 mod room;
 mod rooms_registry;
 mod runtime;
+mod worker;
 
 use crate::participant::ParticipantConnection;
 use crate::room::RoomId;
-use crate::rooms_registry::ServerState;
+use crate::rooms_registry::{RoomsRegistry, ServerState};
+use crate::worker::WorkerPool;
 use axum::extract::{Extension, Query, WebSocketUpgrade};
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::AddExtensionLayer;
 use log::LevelFilter;
+use log::*;
+use mediasoup::worker::WorkerSettings;
 use serde::Deserialize;
-use std::env::current_dir;
+use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use structopt::StructOpt;
 use tokio::signal::ctrl_c;
+use tower_http::services::ServeDir;
 
 /// A demo of Mediasoup in Rust
 #[derive(Debug, StructOpt)]
@@ -53,19 +59,44 @@ async fn main() -> anyhow::Result<()> {
         threads,
     } = Opts::from_args();
 
-    println!("Log level is {}.", log_level);
-    let abs_log_root = current_dir()?.join(&log_root);
-    tokio::fs::create_dir_all(&abs_log_root).await?;
-    println!(
-        "Log root directory is {}.",
-        abs_log_root.canonicalize()?.display()
-    );
+    let _handle = init_logger(log_level, &log_root)?;
 
-    let _handle = init_logger(log_level, log_root)?;
+    info!("Log level is {}.", log_level);
+    tokio::fs::create_dir_all(&log_root).await?;
+    info!("Log root directory is {}.", log_root.display());
+    info!("Static file path is {}", static_path.display());
+    let threads = match threads {
+        None => {
+            let cores = num_cpus::get();
+            info!(
+                "'threads' argument are not provided, the number of CPU cores ({}) will be used.",
+                cores
+            );
+            cores
+        }
+        Some(threads) => {
+            info!("Worker threads count is {}", threads);
+            threads
+        }
+    };
+
+    let mut worker_settings = WorkerSettings::default();
+    worker_settings.rtc_ports_range = 40000..=40050;
+
+    let worker_pool = WorkerPool::new(threads, worker_settings).await?;
+    let rooms_registry = RoomsRegistry::default();
 
     let app = axum::Router::new()
         .route("/ws", axum::handler::get(ws_handler))
-        .layer(AddExtensionLayer::new(ServerState::default()));
+        .nest(
+            "/",
+            axum::service::get(ServeDir::new(static_path))
+                .handle_error(|_| Ok::<_, Infallible>((StatusCode::INTERNAL_SERVER_ERROR, ""))),
+        )
+        .layer(AddExtensionLayer::new(ServerState {
+            worker_pool,
+            rooms_registry,
+        }));
 
     let sock_addr = SocketAddr::from(([0, 0, 0, 0], port));
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
@@ -87,17 +118,16 @@ async fn main() -> anyhow::Result<()> {
     if ctrl_c().await.is_err() {
         anyhow::bail!("Signal listen error.");
     }
-    println!("\nGot Ctrl-C, press again to exit.");
+    println!("\rGot Ctrl-C, press again to exit.");
 
     if ctrl_c().await.is_err() {
         anyhow::bail!("Signal listen error.");
     }
-
     tx.send(()).unwrap_or_default();
     server_handle.await?;
-    println!("\nHttp server shutdown gracefully.");
+    info!("\rHttp server shutdown gracefully.");
 
-    println!("Bye!");
+    info!("Bye!");
 
     Ok(())
 }
@@ -115,26 +145,27 @@ async fn ws_handler(
 ) -> impl IntoResponse {
     ws.on_upgrade(move |socket| async move {
         {
+            let worker = server_state.worker_pool.next();
             let get_room = match room_id {
                 None => server_state
                     .rooms_registry
-                    .create_room(&server_state.worker_manger)
+                    .create_room(&worker)
                     .await
                     .map_err(anyhow::Error::msg),
                 Some(room_id) => server_state
                     .rooms_registry
-                    .get_or_create_room(&server_state.worker_manger, room_id)
+                    .get_or_create_room(&worker, room_id)
                     .await
                     .map_err(anyhow::Error::msg),
             };
 
             let room = match get_room {
                 Ok(room) => {
-                    log::debug!("Room {} created.", room.id());
+                    debug!("Room {} created.", room.id());
                     room
                 }
                 Err(error) => {
-                    log::error!("get room error: {}", error);
+                    error!("get room error: {}", error);
                     return;
                 }
             };
@@ -142,13 +173,13 @@ async fn ws_handler(
             let participant_connection = match ParticipantConnection::new(room).await {
                 Ok(participant_connection) => participant_connection,
                 Err(e) => {
-                    log::error!("Failed to create transport: {}", e);
+                    error!("Failed to create transport: {}", e);
                     return;
                 }
             };
 
             if let Err(e) = participant_connection.run(socket).await {
-                log::error!("participant error: {}", e);
+                error!("participant error: {}", e);
             }
         }
     })

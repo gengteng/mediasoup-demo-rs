@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use crate::room::{Room, RoomId, WeakRoom};
+use crate::worker::WorkerPool;
 use mediasoup::prelude::*;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -18,7 +19,7 @@ impl RoomsRegistry {
     /// Retrieves existing room or creates a new one with specified `RoomId`
     pub async fn get_or_create_room(
         &self,
-        worker_manager: &WorkerManager,
+        worker: &Worker,
         room_id: RoomId,
     ) -> Result<Room, String> {
         let mut rooms = self.rooms.lock().await;
@@ -26,7 +27,7 @@ impl RoomsRegistry {
             Entry::Occupied(mut entry) => match entry.get().upgrade() {
                 Some(room) => Ok(room),
                 None => {
-                    let room = Room::new_with_id(worker_manager, room_id).await?;
+                    let room = Room::new_with_id(worker, room_id).await?;
                     entry.insert(room.downgrade());
                     room.on_close({
                         let room_id = room.id();
@@ -50,19 +51,11 @@ impl RoomsRegistry {
                 }
             },
             Entry::Vacant(entry) => {
-                let room = Room::new_with_id(worker_manager, room_id).await?;
+                let room = Room::new_with_id(worker, room_id).await?;
                 entry.insert(room.downgrade());
                 room.on_close({
                     let room_id = room.id();
                     let rooms = Arc::clone(&self.rooms);
-
-                    // move || {
-                    //     std::thread::spawn(move || {
-                    //         futures_lite::future::block_on(async move {
-                    //             rooms.lock().await.remove(&room_id);
-                    //         });
-                    //     });
-                    // }
 
                     move || {
                         tokio::spawn(async move {
@@ -77,21 +70,13 @@ impl RoomsRegistry {
     }
 
     /// Create new room with random `RoomId`
-    pub async fn create_room(&self, worker_manager: &WorkerManager) -> Result<Room, String> {
+    pub async fn create_room(&self, worker: &Worker) -> Result<Room, String> {
         let mut rooms = self.rooms.lock().await;
-        let room = Room::new(worker_manager).await?;
+        let room = Room::new(worker).await?;
         rooms.insert(room.id(), room.downgrade());
         room.on_close({
             let room_id = room.id();
             let rooms = Arc::clone(&self.rooms);
-
-            // move || {
-            //     std::thread::spawn(move || {
-            //         futures_lite::future::block_on(async move {
-            //             rooms.lock().await.remove(&room_id);
-            //         });
-            //     });
-            // }
 
             move || {
                 tokio::spawn(async move {
@@ -104,8 +89,8 @@ impl RoomsRegistry {
     }
 }
 
-#[derive(Clone, Default, Debug)]
+#[derive(Clone)]
 pub struct ServerState {
-    pub worker_manger: WorkerManager,
+    pub worker_pool: WorkerPool,
     pub rooms_registry: RoomsRegistry,
 }
