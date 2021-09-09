@@ -2,7 +2,6 @@ mod codec;
 mod participant;
 pub(crate) mod room;
 mod rooms_registry;
-mod runtime;
 mod worker;
 
 use crate::participant::ParticipantConnection;
