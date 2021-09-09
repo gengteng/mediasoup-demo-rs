@@ -30,9 +30,17 @@ struct Opts {
     #[structopt(short = "r", long, default_value = "./log")]
     log_root: PathBuf,
 
+    /// static file path
+    #[structopt(short = "s", long, default_value = "./public")]
+    static_path: PathBuf,
+
     /// http port
-    #[structopt(short = "p", long, default_value = "3000")]
+    #[structopt(short = "p", long, default_value = "8000")]
     port: u16,
+
+    /// thread
+    #[structopt(short = "t", long)]
+    threads: Option<usize>,
 }
 
 #[tokio::main]
@@ -40,7 +48,9 @@ async fn main() -> anyhow::Result<()> {
     let Opts {
         log_level,
         log_root,
+        static_path,
         port,
+        threads,
     } = Opts::from_args();
 
     println!("Log level is {}.", log_level);
