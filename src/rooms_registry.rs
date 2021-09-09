@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use crate::room::{Room, RoomId, WeakRoom};
+use crate::room::{Room, RoomId, RoomMeta, WeakRoom};
 use crate::worker::WorkerPool;
 use mediasoup::prelude::*;
 use std::collections::hash_map::Entry;
@@ -19,7 +19,7 @@ impl RoomsRegistry {
     /// Retrieves existing room or creates a new one with specified `RoomId`
     pub async fn get_or_create_room(
         &self,
-        worker: &Worker,
+        worker: Worker,
         room_id: RoomId,
     ) -> Result<Room, String> {
         let mut rooms = self.rooms.lock().await;
@@ -33,13 +33,6 @@ impl RoomsRegistry {
                         let room_id = room.id();
                         let rooms = Arc::clone(&self.rooms);
 
-                        // move || {
-                        //     std::thread::spawn(move || {
-                        //         futures_lite::future::block_on(async move {
-                        //             rooms.lock().await.remove(&room_id);
-                        //         });
-                        //     });
-                        // }
                         move || {
                             tokio::spawn(async move {
                                 rooms.lock().await.remove(&room_id);
@@ -69,8 +62,17 @@ impl RoomsRegistry {
         }
     }
 
+    pub async fn get(&self, room_id: &RoomId) -> Option<Room> {
+        self.rooms
+            .lock()
+            .await
+            .get(&room_id)
+            .map(WeakRoom::upgrade)
+            .flatten()
+    }
+
     /// Create new room with random `RoomId`
-    pub async fn create_room(&self, worker: &Worker) -> Result<Room, String> {
+    pub async fn create_room(&self, worker: Worker) -> Result<Room, String> {
         let mut rooms = self.rooms.lock().await;
         let room = Room::new(worker).await?;
         rooms.insert(room.id(), room.downgrade());
@@ -86,6 +88,17 @@ impl RoomsRegistry {
         })
         .detach();
         Ok(room)
+    }
+
+    /// Query rooms
+    pub async fn query_rooms(&self) -> Vec<RoomMeta> {
+        self.rooms
+            .lock()
+            .await
+            .iter()
+            .filter_map(|(_, wr)| wr.upgrade())
+            .map(|ref a| a.into())
+            .collect::<Vec<RoomMeta>>()
     }
 }
 

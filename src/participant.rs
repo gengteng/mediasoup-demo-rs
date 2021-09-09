@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use crate::room::Room;
+use crate::rooms_registry::ServerState;
 use axum::extract::ws::{Message, WebSocket};
 use event_listener_primitives::HandlerId;
 use mediasoup::prelude::*;
@@ -12,7 +13,7 @@ use uuid::Uuid;
 
 pub mod messages {
     use crate::participant::ParticipantId;
-    use crate::room::RoomId;
+    use crate::room::{RoomId, RoomMeta};
     use mediasoup::prelude::*;
     use serde::{Deserialize, Serialize};
 
@@ -72,6 +73,8 @@ pub mod messages {
             kind: MediaKind,
             rtp_parameters: RtpParameters,
         },
+        #[serde(rename_all = "camelCase")]
+        RoomList { rooms: Vec<RoomMeta> },
     }
 
     /// Client messages sent to the server
@@ -100,6 +103,8 @@ pub mod messages {
         /// Request to resume consumer that was previously created
         #[serde(rename_all = "camelCase")]
         ConsumerResume { id: ConsumerId },
+        #[serde(rename_all = "camelCase")]
+        QueryRoom,
     }
 
     /// Internal actor messages for convenience
@@ -199,7 +204,11 @@ impl ParticipantConnection {
         })
     }
 
-    pub async fn run(mut self, mut socket: WebSocket) -> anyhow::Result<()> {
+    pub async fn run(
+        mut self,
+        mut socket: WebSocket,
+        server_state: ServerState,
+    ) -> anyhow::Result<()> {
         use messages::*;
 
         let server_init_message = ServerMessage::Init {
@@ -504,6 +513,14 @@ impl ParticipantConnection {
                                                     }
                                                 }
                                             });
+                                        }
+                                    }
+                                    ClientMessage::QueryRoom => {
+                                        let rooms = server_state.rooms_registry.query_rooms().await;
+                                        if let Err(e) = server_message_sender.send(ServerMessage::RoomList { rooms }) {
+                                            log::error!("send message error: {}", e);
+                                            internal_message_sender.send(InternalMessage::Stop).unwrap_or_default();
+                                            continue;
                                         }
                                     }
                                 }

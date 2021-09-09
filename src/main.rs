@@ -1,6 +1,6 @@
 mod codec;
 mod participant;
-mod room;
+pub(crate) mod room;
 mod rooms_registry;
 mod runtime;
 mod worker;
@@ -87,12 +87,12 @@ async fn main() -> anyhow::Result<()> {
     let rooms_registry = RoomsRegistry::default();
 
     let app = axum::Router::new()
-        .route("/ws", axum::handler::get(ws_handler))
         .nest(
             "/",
             axum::service::get(ServeDir::new(static_path))
                 .handle_error(|_| Ok::<_, Infallible>((StatusCode::INTERNAL_SERVER_ERROR, ""))),
         )
+        .route("/ws", axum::handler::get(ws_handler))
         .layer(AddExtensionLayer::new(ServerState {
             worker_pool,
             rooms_registry,
@@ -149,12 +149,12 @@ async fn ws_handler(
             let get_room = match room_id {
                 None => server_state
                     .rooms_registry
-                    .create_room(&worker)
+                    .create_room(worker)
                     .await
                     .map_err(anyhow::Error::msg),
                 Some(room_id) => server_state
                     .rooms_registry
-                    .get_or_create_room(&worker, room_id)
+                    .get_or_create_room(worker, room_id)
                     .await
                     .map_err(anyhow::Error::msg),
             };
@@ -178,7 +178,7 @@ async fn ws_handler(
                 }
             };
 
-            if let Err(e) = participant_connection.run(socket).await {
+            if let Err(e) = participant_connection.run(socket, server_state).await {
                 error!("participant error: {}", e);
             }
         }

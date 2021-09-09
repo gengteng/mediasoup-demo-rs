@@ -1,4 +1,5 @@
 use mediasoup::prelude::*;
+use mediasoup::worker::WorkerId;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -34,5 +35,9 @@ impl WorkerPool {
         let index = self.index.fetch_add(1, Ordering::Relaxed);
         let len = self.workers.len();
         self.workers[index % len].clone()
+    }
+
+    pub fn get(&self, worker_id: WorkerId) -> Option<Worker> {
+        self.workers.iter().find(|w| w.id() == worker_id).cloned()
     }
 }
