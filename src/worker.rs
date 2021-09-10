@@ -1,5 +1,5 @@
 use mediasoup::prelude::*;
-use mediasoup::worker::WorkerId;
+// use mediasoup::worker::WorkerId;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -37,7 +37,7 @@ impl WorkerPool {
         self.workers[index % len].clone()
     }
 
-    pub fn get(&self, worker_id: WorkerId) -> Option<Worker> {
-        self.workers.iter().find(|w| w.id() == worker_id).cloned()
-    }
+    // pub fn get(&self, worker_id: WorkerId) -> Option<Worker> {
+    //     self.workers.iter().find(|w| w.id() == worker_id).cloned()
+    // }
 }

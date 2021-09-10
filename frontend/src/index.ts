@@ -51,6 +51,16 @@ interface ServerRoomList {
 	rooms: RoomMeta[];
 }
 
+interface ServerParticipantList {
+	action: 'ParticipantList';
+	participants: Participant[];
+}
+
+interface Participant {
+	participantId: ParticipantId;
+	producerId: ProducerId;
+}
+
 interface RoomMeta {
 	roomId: RoomId;
 	routerId: RouterId;
@@ -72,7 +82,8 @@ type ServerMessage =
 	ServerProduced |
 	ServerConnectedConsumerTransport |
 	ServerConsumed |
-	ServerRoomList;
+	ServerRoomList |
+	ServerParticipantList;
 
 interface ClientInit {
 	action: 'Init';
@@ -109,6 +120,11 @@ interface ClientQueryRoom {
 	action: 'QueryRoom';
 }
 
+interface ClientQueryParticipant {
+	action: 'QueryParticipant';
+	roomId: RoomId;
+}
+
 type ClientMessage =
 	ClientInit |
 	ClientConnectProducerTransport |
@@ -116,7 +132,8 @@ type ClientMessage =
 	ClientConnectConsumerTransport |
 	ClientConsume |
 	ClientConsumerResume |
-	ClientQueryRoom;
+	ClientQueryRoom |
+	ClientQueryParticipant;
 
 class Participant
 {
@@ -374,9 +391,23 @@ async function init()
 
 				waitingForResponse.set('RoomList', ({ rooms }: { rooms: RoomMeta[] }) =>
 				{
+					let roomList = document.getElementById("roomList");
 					for (const rm of rooms) {
 						let myRoom = roomId === rm.roomId;
-						console.log("Room: " + rm.roomId + ", router: " + rm.routerId + ", worker: " + rm.workerId + (myRoom ? " (I'm here)" : ""));
+						let button = document.createElement("button");
+						button.innerText = rm.roomId + (myRoom ? " (I'm here)" : "");
+						button.onclick = () => {
+							console.log("Room: " + rm.roomId + ", router: " + rm.routerId + ", worker: " + rm.workerId + (myRoom ? " (I'm here)" : ""));
+							if (!myRoom) {
+								send({action: 'QueryParticipant', roomId: rm.roomId});
+								waitingForResponse.set('ParticipantList', ({ participants }: { participants: Participant[] }) => {
+									for (const participant of participants) {
+										console.log(JSON.stringify(participant));
+									}
+								});
+							}
+						};
+						roomList!.appendChild(button);
 					}
 				});
 
