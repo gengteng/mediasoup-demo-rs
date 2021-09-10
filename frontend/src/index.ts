@@ -233,7 +233,7 @@ async function init()
 
 	const participants = new Participants();
 
-	const roomId = (new URL(location.href)).searchParams.get('roomId') as RoomId | undefined;
+	let roomId = (new URL(location.href)).searchParams.get('roomId') as RoomId | undefined;
 	const wsUrl = new URL('ws://' + location.host + '/ws');
 
 	if (roomId)
@@ -262,9 +262,10 @@ async function init()
 			case 'Init': {
 				if (!roomId)
 				{
+					roomId = message.roomId;
 					const url = new URL(location.href);
 
-					url.searchParams.set('roomId', message.roomId);
+					url.searchParams.set('roomId', roomId);
 					history.pushState({}, '', url.toString());
 				}
 				// It is expected that server will send initialization message right after
