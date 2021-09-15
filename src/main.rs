@@ -46,6 +46,14 @@ struct Opts {
     /// thread
     #[structopt(short = "t", long)]
     threads: Option<usize>,
+
+    /// private key file path
+    #[structopt(short = "v", long)]
+    priv_key_file: Option<PathBuf>,
+
+    /// certificate file path
+    #[structopt(short = "c", long)]
+    cert_file: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -56,6 +64,8 @@ async fn main() -> anyhow::Result<()> {
         static_path,
         port,
         threads,
+        priv_key_file,
+        cert_file,
     } = Opts::from_args();
 
     let _handle = init_logger(log_level, &log_root)?;
@@ -101,16 +111,28 @@ async fn main() -> anyhow::Result<()> {
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
 
     let server_handle = tokio::spawn(async move {
-        log::info!("Http server started ({}).", sock_addr);
-        let graceful_server = axum::Server::bind(&sock_addr)
-            .serve(app.into_make_service())
-            .with_graceful_shutdown(async {
-                rx.await.ok();
-            });
-
-        // Await the `server` receiving the signal...
-        if let Err(e) = graceful_server.await {
-            log::error!("Http server error: {}", e);
+        //let service = app.into_make_service();
+        if let (Some(priv_key_file), Some(cert_file)) = (priv_key_file, cert_file) {
+            log::info!("Https server started ({}).", sock_addr);
+            let graceful_server = axum_server::bind_rustls(sock_addr.to_string())
+                .private_key_file(priv_key_file)
+                .certificate_file(cert_file)
+                .serve(app);
+            // Await the `server` receiving the signal...
+            if let Err(e) = graceful_server.await {
+                log::error!("Https server error: {}", e);
+            }
+        } else {
+            log::info!("Http server started ({}).", sock_addr);
+            let graceful_server = axum::Server::bind(&sock_addr)
+                .serve(app.into_make_service())
+                .with_graceful_shutdown(async {
+                    rx.await.ok();
+                });
+            // Await the `server` receiving the signal...
+            if let Err(e) = graceful_server.await {
+                log::error!("Http server error: {}", e);
+            }
         }
     });
 
