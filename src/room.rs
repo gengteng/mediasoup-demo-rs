@@ -3,6 +3,8 @@
 use crate::participant::ParticipantId;
 use event_listener_primitives::{Bag, BagOnce, HandlerId};
 use mediasoup::prelude::*;
+use mediasoup::router::RouterId;
+use mediasoup::worker::WorkerId;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -34,6 +36,7 @@ struct Handlers {
 
 struct Inner {
     id: RoomId,
+    worker: Worker,
     router: Router,
     handlers: Handlers,
     clients: Mutex<HashMap<ParticipantId, Vec<Producer>>>,
@@ -51,7 +54,7 @@ impl fmt::Debug for Inner {
 
 impl Drop for Inner {
     fn drop(&mut self) {
-        println!("Room {} closed", self.id);
+        log::info!("Room {} closed", self.id);
 
         self.handlers.close.call_simple();
     }
@@ -66,16 +69,12 @@ pub struct Room {
 
 impl Room {
     /// Create new `Room` with random `RoomId`
-    pub async fn new(worker_manager: &WorkerManager) -> Result<Self, String> {
-        Self::new_with_id(worker_manager, RoomId::new()).await
+    pub async fn new(worker: Worker) -> Result<Self, String> {
+        Self::new_with_id(worker, RoomId::new()).await
     }
 
     /// Create new `Room` with a specific `RoomId`
-    pub async fn new_with_id(worker_manager: &WorkerManager, id: RoomId) -> Result<Room, String> {
-        let worker = worker_manager
-            .create_worker(WorkerSettings::default())
-            .await
-            .map_err(|error| format!("Failed to create worker: {}", error))?;
+    pub async fn new_with_id(worker: Worker, id: RoomId) -> Result<Room, String> {
         let router = worker
             .create_router(RouterOptions::new(crate::codec::supported_media_codecs()))
             .await
@@ -86,6 +85,7 @@ impl Room {
         Ok(Self {
             inner: Arc::new(Inner {
                 id,
+                worker,
                 router,
                 handlers: Handlers::default(),
                 clients: Mutex::default(),
@@ -101,6 +101,11 @@ impl Room {
     /// Get router associated with this room
     pub fn router(&self) -> &Router {
         &self.inner.router
+    }
+
+    /// Get worker accociated with this room
+    pub fn worker(&self) -> &Worker {
+        &self.inner.worker
     }
 
     /// Add producer to the room, this will trigger notifications to other participants that
@@ -187,5 +192,23 @@ impl WeakRoom {
     /// Upgrade `WeakRoom` to `Room`, may return `None` if underlying room was destroyed already
     pub fn upgrade(&self) -> Option<Room> {
         self.inner.upgrade().map(|inner| Room { inner })
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoomMeta {
+    room_id: RoomId,
+    router_id: RouterId,
+    worker_id: WorkerId,
+}
+
+impl From<&Room> for RoomMeta {
+    fn from(room: &Room) -> Self {
+        RoomMeta {
+            room_id: room.id(),
+            router_id: room.router().id(),
+            worker_id: room.worker().id(),
+        }
     }
 }

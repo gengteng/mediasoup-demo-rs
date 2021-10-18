@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport"
+          content="width=device-width, user-scalable=no, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <title>Document</title>
+</head>
+<body>
+<style>
+    body {
+        margin: 0;
+    }
+
+    #container {
+        display: flex;
+        margin: 2px;
+    }
+
+    figure {
+        margin: 0;
+        width: 30vw;
+    }
+
+    video {
+        max-width: 100%;
+    }
+</style>
+Rooms:
+<br/>
+<div id="roomList">
+</div>
+<hr>
+<div id="container">
+    <figure>
+        <video id="preview-send" muted controls></video>
+        <figcaption>You</figcaption>
+    </figure>
+</div>
+<script src="dist/bundle.js">
+</script>
+</body>
+</html>
