@@ -186,7 +186,7 @@ impl ParticipantConnection {
         // this at a different time and/or in different order.
         let transport_options =
             WebRtcTransportOptions::new(TransportListenIps::new(TransportListenIp {
-                ip: "127.0.0.1".parse().unwrap(),
+                ip: "192.168.0.108".parse().unwrap(),
                 announced_ip: None,
             }));
         let producer_transport = room

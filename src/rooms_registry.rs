@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+use crate::participant::ParticipantId;
+use crate::record::Recorder;
 use crate::room::{Room, RoomId, RoomMeta, WeakRoom};
 use crate::worker::WorkerPool;
 use mediasoup::prelude::*;
@@ -106,4 +108,5 @@ impl RoomsRegistry {
 pub struct ServerState {
     pub worker_pool: WorkerPool,
     pub rooms_registry: RoomsRegistry,
+    pub recorders: Arc<Mutex<HashMap<ParticipantId, Recorder>>>,
 }

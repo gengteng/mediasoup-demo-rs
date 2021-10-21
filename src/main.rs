@@ -1,24 +1,28 @@
 mod codec;
 mod participant;
+mod record;
 pub(crate) mod room;
 mod rooms_registry;
 mod worker;
 
-use crate::participant::ParticipantConnection;
+use crate::participant::{ParticipantConnection, ParticipantId};
+use crate::record::{publish_producer_rtp_stream, Recorder};
 use crate::room::RoomId;
 use crate::rooms_registry::{RoomsRegistry, ServerState};
 use crate::worker::WorkerPool;
-use axum::extract::{Extension, Query, WebSocketUpgrade};
+use axum::extract::{Extension, Path, Query, WebSocketUpgrade};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::AddExtensionLayer;
+use axum::{AddExtensionLayer, Json};
 use log::LevelFilter;
 use log::*;
+use mediasoup::prelude::MediaKind;
 use mediasoup::worker::WorkerSettings;
 use serde::Deserialize;
+use std::collections::hash_map::Entry;
 use std::convert::Infallible;
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::{Path as StdPath, PathBuf};
 use structopt::StructOpt;
 use tokio::signal::ctrl_c;
 use tower_http::services::ServeDir;
@@ -101,10 +105,14 @@ async fn main() -> anyhow::Result<()> {
             axum::service::get(ServeDir::new(static_path))
                 .handle_error(|_| Ok::<_, Infallible>((StatusCode::INTERNAL_SERVER_ERROR, ""))),
         )
+        .route("/producers/:room_id", axum::handler::get(get_producers))
+        .route("/record", axum::handler::post(start_record))
+        .route("/record", axum::handler::delete(stop_record))
         .route("/ws", axum::handler::get(ws_handler))
         .layer(AddExtensionLayer::new(ServerState {
             worker_pool,
             rooms_registry,
+            recorders: Default::default(),
         }));
 
     let sock_addr = SocketAddr::from(([0, 0, 0, 0], port));
@@ -159,6 +167,98 @@ struct WebsocketUpgradeQuery {
     pub room_id: Option<RoomId>,
 }
 
+async fn get_producers(
+    Path(room_id): Path<RoomId>,
+    Extension(server_state): Extension<ServerState>,
+) -> impl IntoResponse {
+    if let Some(room) = server_state.rooms_registry.get(&room_id).await {
+        let producers = room.get_all_producers_info();
+        (
+            StatusCode::OK,
+            serde_json::to_string(&producers).expect("impossible"),
+        )
+    } else {
+        (StatusCode::NOT_FOUND, String::new())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RecordParam {
+    room_id: RoomId,
+    participant_id: ParticipantId,
+}
+
+async fn stop_record(
+    Json(_record): Json<RecordParam>,
+    Extension(_server_state): Extension<ServerState>,
+) -> impl IntoResponse {
+    (StatusCode::OK, String::new())
+}
+
+async fn start_record(
+    Json(record): Json<RecordParam>,
+    Extension(server_state): Extension<ServerState>,
+) -> impl IntoResponse {
+    if server_state
+        .recorders
+        .lock()
+        .await
+        .contains_key(&record.participant_id)
+    {
+        return (StatusCode::OK, String::from("recorder exists"));
+    }
+
+    if let Some(room) = server_state.rooms_registry.get(&record.room_id).await {
+        if let Some(producers) = room.get_participant_producers(&record.participant_id) {
+            let mut consumers = Vec::with_capacity(producers.len());
+            let mut vi = None;
+            let mut ai = None;
+
+            let mut port = 5002u16;
+            for producer in producers {
+                match publish_producer_rtp_stream(room.clone(), producer, port).await {
+                    Ok((record_info, consumer)) => {
+                        consumers.push(consumer);
+                        match record_info.media_kind {
+                            MediaKind::Audio => ai = Some(record_info),
+                            MediaKind::Video => vi = Some(record_info),
+                        }
+                    }
+                    Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+                }
+                port += 2;
+            }
+
+            match (vi, ai) {
+                (Some(vi), Some(ai)) => match Recorder::start_record(vi, ai, consumers).await {
+                    Ok(recorder) => match server_state
+                        .recorders
+                        .lock()
+                        .await
+                        .entry(record.participant_id)
+                    {
+                        Entry::Occupied(_) => {
+                            return (StatusCode::OK, String::from("recorder exists"));
+                        }
+                        Entry::Vacant(v) => {
+                            v.insert(recorder);
+                        }
+                    },
+                    Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+                },
+                _ => return (StatusCode::NOT_FOUND, String::new()),
+            }
+
+            (StatusCode::OK, String::new())
+        } else {
+            (StatusCode::NOT_FOUND, String::new())
+        }
+    } else {
+        (StatusCode::NOT_FOUND, String::new())
+    }
+}
+
 async fn ws_handler(
     Query(WebsocketUpgradeQuery { room_id }): Query<WebsocketUpgradeQuery>,
     ws: WebSocketUpgrade,
@@ -206,7 +306,7 @@ async fn ws_handler(
     })
 }
 
-fn init_logger<P: AsRef<Path>>(level: LevelFilter, path: P) -> anyhow::Result<log4rs::Handle> {
+fn init_logger<P: AsRef<StdPath>>(level: LevelFilter, path: P) -> anyhow::Result<log4rs::Handle> {
     use log4rs::append::console::ConsoleAppender;
     use log4rs::append::rolling_file::policy::compound::roll::fixed_window::FixedWindowRoller;
     use log4rs::append::rolling_file::policy::compound::trigger::size::SizeTrigger;

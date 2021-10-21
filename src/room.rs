@@ -34,6 +34,16 @@ struct Handlers {
     close: BagOnce<Box<dyn FnOnce() + Send>>,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProducerInfo {
+    pub room_id: RoomId,
+    pub participant_id: ParticipantId,
+    pub producer_id: ProducerId,
+    pub media_kind: MediaKind,
+    pub rtp_parameters: RtpParameters,
+}
+
 struct Inner {
     id: RoomId,
     worker: Worker,
@@ -147,6 +157,35 @@ impl Room {
                 producers
                     .iter()
                     .map(move |producer| (participant_id, producer.id()))
+            })
+            .flatten()
+            .collect()
+    }
+
+    /// Get producers of the participant
+    pub fn get_participant_producers(
+        &self,
+        participant_id: &ParticipantId,
+    ) -> Option<Vec<Producer>> {
+        self.inner.clients.lock().get(participant_id).cloned()
+    }
+
+    /// Get all producers info of all participants
+    pub fn get_all_producers_info(&self) -> Vec<ProducerInfo> {
+        let room_id = self.inner.id;
+        self.inner
+            .clients
+            .lock()
+            .iter()
+            .map(|(participant_id, producers)| {
+                let participant_id = *participant_id;
+                producers.iter().map(move |producer| ProducerInfo {
+                    room_id,
+                    participant_id,
+                    producer_id: producer.id(),
+                    media_kind: producer.kind(),
+                    rtp_parameters: producer.rtp_parameters().clone(),
+                })
             })
             .flatten()
             .collect()

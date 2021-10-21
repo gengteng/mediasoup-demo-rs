@@ -251,7 +251,7 @@ async function init()
 	const participants = new Participants();
 
 	let roomId = (new URL(location.href)).searchParams.get('roomId') as RoomId | undefined;
-	const wsUrl = new URL('ws://' + location.host + '/ws');
+	const wsUrl = new URL((location.protocol === 'https:' ? 'wss' : 'ws') + '://' + location.host + '/ws');
 
 	if (roomId)
 	{
